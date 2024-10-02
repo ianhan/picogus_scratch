@@ -7,3 +7,6 @@
 [submodule "sw/tusb_xinput"]
 	path = sw/tusb_xinput
 	url = https://github.com/Ryzee119/tusb_xinput
+[submodule "libdlo"]
+	path = libdlo
+	url = https://gitlab.freedesktop.org/archived-projects/libdlo.git
