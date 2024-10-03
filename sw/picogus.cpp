@@ -101,6 +101,13 @@ uint8_t joystate_bin;
 #ifdef USB_ONLY
 void play_usb(void);
 #endif
+#ifdef PAL_ONLY
+#define IO_DAC_WRITE 0x3c8
+#define IO_DAC_DATA 0x3c9
+void pal_dac_write(uint8_t index);
+void pal_dac_data(uint8_t data);
+void play_pal(void);
+#endif
 
 // PicoGUS control and data ports
 static bool control_active = false;
@@ -406,6 +413,8 @@ void processSettings(void) {
     settings.startupMode = MPU_MODE;
 #elif defined(USB_ONLY)
     settings.startupMode = USB_MODE;
+#elif defined(PAL_ONLY)
+    settings.startupMode = PAL_MODE;
 #else
     settings.startupMode = INVALID_MODE;
 #endif
@@ -439,6 +448,21 @@ __force_inline void handle_iow(void) {
     // printf("%x", iow_read);
     uint16_t port = (iow_read >> 8) & 0x3FF;
     // printf("IOW: %x %x\n", port, iow_read & 0xFF);
+
+#ifdef PAL_ONLY
+    uint8_t io_data = iow_read & 0xFF;
+    switch(port) {
+        case IO_DAC_WRITE:
+            pal_dac_write(io_data);
+            break;
+        case IO_DAC_DATA:
+            pal_dac_data(io_data);
+            break;
+        default:
+            break;
+    }
+#endif
+
 #ifdef SOUND_GUS
     if ((port >> 4 | 0x10) == gus_port_test) {
         port -= settings.GUS.basePort;
@@ -933,7 +957,7 @@ int main()
     multicore_launch_core1(&play_gus);
 #endif // SOUND_GUS
 
-#ifdef SOUND_MPU
+#ifdef SOUND_MPU 
 #ifdef MPU_ONLY
     multicore_launch_core1(&play_mpu);
 #endif // MPU_ONLY
@@ -971,6 +995,9 @@ int main()
 #endif // USB_MOUSE
 #ifdef USB_ONLY
     multicore_launch_core1(&play_usb);
+#endif // USBONLY
+#ifdef PAL_ONLY
+    multicore_launch_core1(&play_pal);
 #endif // USBONLY
 
     for(int i=AD0_PIN; i<(AD0_PIN + 10); ++i) {

@@ -36,7 +36,7 @@ set(CMAKE_BUILD_TYPE "Release")
 #set(SKIP_PICO_MALLOC 1)
 
 if(NOT PROJECT_TYPE)
-    set(PROJECT_TYPE "GUS")
+    set(PROJECT_TYPE "PAL")
     message("PROJECT_TYPE not set, defaulting to ${PROJECT_TYPE}")
 endif()
 
@@ -123,6 +123,7 @@ function(config_target TARGET_NAME MULTIFW)
         M62429/M62429.cpp
         pico_pic.c
     )
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/M62429/M62429.pio)
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/isa_io.pio)
 
@@ -310,6 +311,20 @@ function(build_usb TARGET_NAME MULTIFW)
     target_sources(${TARGET_NAME} PRIVATE usbplay.cpp)
 endfunction()
 
+################################################################################
+# Build palette hack
+function(build_pal TARGET_NAME MULTIFW)
+    set(USB_JOYSTICK FALSE)
+    set(USB_MOUSE FALSE)
+    set(SOUND_MPU FALSE)
+    config_target(${TARGET_NAME} ${MULTIFW})
+    pico_set_program_name(${TARGET_NAME} "picogus-pal")
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        PAL_ONLY=1
+    )
+    target_sources(${TARGET_NAME} PRIVATE palplay.cpp)
+    pico_enable_stdio_uart(${TARGET_NAME} 0)
+endfunction()
 
 ################################################################################
 # Build "multifw" - all firmwares in one UF2
@@ -436,6 +451,9 @@ elseif(PROJECT_TYPE STREQUAL "CMS")
 elseif(PROJECT_TYPE STREQUAL "USB")
     set(FW_TARGET pg-usb)
     build_usb(pg-usb FALSE)
+elseif(PROJECT_TYPE STREQUAL "PAL")
+    set(FW_TARGET pg-pal)
+    build_pal(pg-pal FALSE)
 endif()
 
 ################################################################################

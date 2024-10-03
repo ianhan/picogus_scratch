@@ -26,10 +26,11 @@ typedef enum {
     TANDY_MODE   = 4,
     CMS_MODE     = 5,
     SB_MODE      = 6,
-    USB_MODE     = 7
+    USB_MODE     = 7,
+    PAL_MODE     = 8
 } card_mode_t;
 
-static const char *modenames[8] = {
+static const char *modenames[] = {
     "INVALID",
     "GUS",
     "ADLIB",
@@ -37,7 +38,8 @@ static const char *modenames[8] = {
     "TANDY",
     "CMS",
     "SB",
-    "USB"
+    "USB",
+    "PAL"
 };
 
 #define MODE_MAGIC      0x00 // Magic string
