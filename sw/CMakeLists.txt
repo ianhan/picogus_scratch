@@ -36,7 +36,7 @@ set(CMAKE_BUILD_TYPE "Release")
 #set(SKIP_PICO_MALLOC 1)
 
 if(NOT PROJECT_TYPE)
-    set(PROJECT_TYPE "GUS")
+    set(PROJECT_TYPE "USB")
     message("PROJECT_TYPE not set, defaulting to ${PROJECT_TYPE}")
 endif()
 
@@ -93,7 +93,7 @@ function(config_target TARGET_NAME MULTIFW)
         set_linker_script(${TARGET_NAME} ${CMAKE_BINARY_DIR}/${TARGET_NAME}.ld)
     endif()
 
-    if(USB_JOYSTICK OR USB_MOUSE)
+    if(USB_JOYSTICK OR USB_MOUSE OR USB_DISPLAYLINK)
         set(USB_STACK TRUE)
     endif()
     if (USB_STACK)
@@ -117,6 +117,12 @@ function(config_target TARGET_NAME MULTIFW)
             mouse/8250uart.cpp
             mouse/sermouse.cpp
         )
+    endif()
+    if(USB_DISPLAYLINK)
+        # DisplayLink stuff
+        target_link_libraries(${TARGET_NAME} libdlo)
+        target_include_directories(${TARGET_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR}/libdlo)
+        target_compile_definitions(${TARGET_NAME} PRIVATE USB_DISPLAYLINK=1)
     endif()
 
     target_sources(${TARGET_NAME} PRIVATE
@@ -176,6 +182,7 @@ endfunction()
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tusb_xinput)
 add_subdirectory(rp2040-psram)
 add_subdirectory(opl)
+add_subdirectory(libdlo)
 
 
 ################################################################################
@@ -301,6 +308,7 @@ endfunction()
 function(build_usb TARGET_NAME MULTIFW)
     set(USB_JOYSTICK TRUE)
     set(USB_MOUSE TRUE)
+    set(USB_DISPLAYLINK TRUE)
     set(SOUND_MPU TRUE)
     config_target(${TARGET_NAME} ${MULTIFW})
     pico_set_program_name(${TARGET_NAME} "picogus-usb")

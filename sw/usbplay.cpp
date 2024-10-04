@@ -4,12 +4,28 @@
 #include "tusb.h"
 #include "mouse/8250uart.h"
 #include "mouse/sermouse.h"
-
+#include "libdlo.h"
+#include "dlo_defs.h"
 // #include <string.h>
 
 #ifdef USE_ALARM
 #include "pico_pic.h"
 #endif
+
+void init_libdlo() {
+    dlo_init_t ini_flags = { 0 };
+    dlo_final_t fin_flags = { 0 };
+    dlo_claim_t cnf_flags = { 0 };
+    dlo_retcode_t err;
+    dlo_dev_t uid = 0;
+    /* Initialise libdlo */
+    dlo_init(ini_flags);
+    uid = dlo_claim_first_device(cnf_flags, 0);
+    if (uid)
+    {
+        __breakpoint();
+    }
+}
 
 void play_usb() {
     puts("starting core 1 USB");
@@ -25,6 +41,7 @@ void play_usb() {
 
     // init host stack on configured roothub port
     tuh_init(BOARD_TUH_RHPORT);
+
 
     for (;;) {
         // tinyusb host task
