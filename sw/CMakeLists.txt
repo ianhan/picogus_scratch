@@ -312,6 +312,7 @@ function(build_usb TARGET_NAME MULTIFW)
     set(USB_JOYSTICK TRUE)
     set(USB_MOUSE TRUE)
     set(USB_DISPLAYLINK TRUE)
+    set(SOUND_MPU TRUE)
     config_target(${TARGET_NAME} ${MULTIFW})
     pico_set_program_name(${TARGET_NAME} "picogus-usb")
     target_compile_definitions(${TARGET_NAME} PRIVATE
