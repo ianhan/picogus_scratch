@@ -4,7 +4,6 @@ if (PICO_SDK)
             ${CMAKE_CURRENT_LIST_DIR}/dlo_grfx.c
             ${CMAKE_CURRENT_LIST_DIR}/dlo_mode.c
             ${CMAKE_CURRENT_LIST_DIR}/dlo_usb.c
-            ${CMAKE_CURRENT_LIST_DIR}/libdlo.c
-            ${CMAKE_CURRENT_LIST_DIR}/usb.c)
+            ${CMAKE_CURRENT_LIST_DIR}/libdlo.c)
     target_include_directories(libdlo INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 endif()

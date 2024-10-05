@@ -30,9 +30,9 @@ set(PICO_COPY_TO_RAM 1)
 # This is needed to support tusb_xinput
 set(PICO_TINYUSB_PATH ${CMAKE_CURRENT_LIST_DIR}/tinyusb)
 
-#set(PICO_DEOPTIMIZED_DEBUG "1")
-#set(CMAKE_BUILD_TYPE "Debug")
-set(CMAKE_BUILD_TYPE "Release")
+set(PICO_DEOPTIMIZED_DEBUG "1")
+set(CMAKE_BUILD_TYPE "Debug")
+#set(CMAKE_BUILD_TYPE "Release")
 #set(SKIP_PICO_MALLOC 1)
 
 if(NOT PROJECT_TYPE)
@@ -122,7 +122,10 @@ function(config_target TARGET_NAME MULTIFW)
         # DisplayLink stuff
         target_link_libraries(${TARGET_NAME} libdlo)
         target_include_directories(${TARGET_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR}/libdlo)
-        target_compile_definitions(${TARGET_NAME} PRIVATE USB_DISPLAYLINK=1)
+        target_compile_definitions(${TARGET_NAME} PRIVATE
+            USB_DISPLAYLINK=1
+            CFG_TUH_API_EDPT_XFER=1
+        )
     endif()
 
     target_sources(${TARGET_NAME} PRIVATE
@@ -309,7 +312,6 @@ function(build_usb TARGET_NAME MULTIFW)
     set(USB_JOYSTICK TRUE)
     set(USB_MOUSE TRUE)
     set(USB_DISPLAYLINK TRUE)
-    set(SOUND_MPU TRUE)
     config_target(${TARGET_NAME} ${MULTIFW})
     pico_set_program_name(${TARGET_NAME} "picogus-usb")
     target_compile_definitions(${TARGET_NAME} PRIVATE

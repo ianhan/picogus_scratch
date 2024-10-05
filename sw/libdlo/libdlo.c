@@ -324,7 +324,7 @@ dlo_devlist_t *dlo_enumerate_devices(void)
   dlo_retcode_t  err;
   uint32_t       num;
 
-  check_state = !check_state;
+  // check_state = !check_state;
 
   /* Check USB for all DisplayLink devices that we can find. If there is an error returned,
    * then it is likely that the devlist could become out of step with reality. For that

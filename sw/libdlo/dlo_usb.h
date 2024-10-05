@@ -27,7 +27,6 @@
 #ifndef DLO_USB_H
 #define DLO_USB_H        /**< Avoid multiple inclusion. */
 
-#include "usb.h"
 #include "dlo_structs.h"
 
 

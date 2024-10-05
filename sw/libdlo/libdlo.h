@@ -128,7 +128,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "usb.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -556,7 +555,7 @@ extern dlo_retcode_t dlo_final(const dlo_final_t flags);
  *  This call is intended for use by a caller that has already used libusb in order
  *  to identify a particular device that they want to connect to.
  */
-extern dlo_dev_t dlo_lookup_device(struct usb_device *udev);
+extern dlo_dev_t dlo_lookup_device(uint32_t *udev);
 
 
 /** Enumerate all connected DisplayLink-compatible devices.
@@ -798,6 +797,8 @@ extern dlo_retcode_t dlo_copy_rect(const dlo_dev_t uid,
 extern dlo_retcode_t dlo_copy_host_bmp(const dlo_dev_t uid, const dlo_bmpflags_t flags,
                                        const dlo_fbuf_t * const fbuf,
                                        const dlo_view_t * const dest_view, const dlo_dot_t * const dest_pos);
+
+extern dlo_retcode_t dlo_check_device(uint8_t daddr);
 
 #ifdef __cplusplus
 };

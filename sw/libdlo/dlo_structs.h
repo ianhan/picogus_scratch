@@ -178,7 +178,7 @@ typedef uint32_t dlo_modenum_t;
 typedef struct dlo_usb_dev_s
 {
   struct usb_device *udev;   /**< Pointer to USB device structure for given device. */
-  usb_dev_handle    *uhand;  /**< USB device handle (once device is "opened"). */
+  uint32_t          *uhand;  /**< USB device handle (once device is "opened"). */
 } dlo_usb_dev_t;             /**< A struct @a dlo_usb_dev_s. */
 
 

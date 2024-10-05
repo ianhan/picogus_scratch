@@ -25,7 +25,11 @@
 #include "dlo_usb.h"
 #include "dlo_base.h"
 #include "dlo_mode.h"
+#include "tusb.h"
 
+/** If a tusb_ function call returns an error code, jump to the "error" label. */
+#define TBERR_GOTO(cmd) do { err = (cmd); if (!err) goto error; } while(0)
+#define TXERR_GOTO(cmd) do { err = (cmd); if (err != XFER_RESULT_SUCCESS) goto error; } while(0)
 
 /* File-scope defines ------------------------------------------------------------------*/
 
@@ -95,25 +99,37 @@ static dlo_retcode_t check_device(struct usb_device *dev);
  *
  *  @return  Return code, zero for no error.
  */
-static dlo_retcode_t read_edid(dlo_device_t * const dev, usb_dev_handle *uhand);
+static dlo_retcode_t read_edid(dlo_device_t * const dev, uint32_t *uhand);
 
-
-/** Make a note of any error returned by libusb.
- *
- *  @return  Return code to indicate a USB-related error.
- *
- *  Often, by the time we have returned from a function, the error code stored in libusb
- *  has been lost because our tidy-up code will call more libusb functions after an error
- *  is spotted. As such, this function is called automatically by the @c UERR() and
- *  @c UERR_GOTO() macros in order to make a note of the error number and message from
- *  libusb at the moment the error is caught. This information is stored locally for
- *  retrieval by @c dlo_usb_strerror().
- */
-static dlo_retcode_t usb_error_grab(void);
 
 
 /* Public function definitions ---------------------------------------------------------*/
 
+// Invoked when device is mounted (configured)
+void tuh_mount_cb (uint8_t daddr)
+{
+  static fInitialized = false;
+  
+  if (!fInitialized) {
+    dlo_init_t ini_flags = { 0 };
+    fInitialized = (dlo_init(ini_flags) == dlo_ok);
+  }
+  
+  if (dlo_check_device(daddr) == dlo_ok) {
+    dlo_claim_t cnf_flags = { 0 };
+    dlo_dev_t uid = 0;
+    uid = dlo_claim_first_device(cnf_flags, 0);
+    if (uid) {
+        dlo_fill_rect(uid, NULL, NULL, DLO_RGB(0, 0, 0));
+    }
+  }
+}
+
+// Invoked when device is unmounted (bus reset/unplugged)
+void tuh_umount_cb(uint8_t daddr)
+{
+  //todo: removal
+}
 
 char *dlo_usb_strerror(void)
 {
@@ -126,11 +142,9 @@ dlo_retcode_t dlo_usb_init(const dlo_init_t flags)
 {
   /* Initialise libusb */
   //DPRINTF("usb: init\n");
-  usb_init();
 
   /* Add nodes onto the device list for any DisplayLink devices we find */
   //DPRINTF("usb: init: enum\n");
-  ERR(dlo_usb_enumerate(true));
 
   return dlo_ok;
 }
@@ -146,71 +160,106 @@ dlo_retcode_t dlo_usb_final(const dlo_final_t flags)
 
 dlo_retcode_t dlo_usb_enumerate(const bool init)
 {
-  struct usb_bus    *bus;
-  struct usb_device *dev = NULL;
-  int32_t            db  = usb_find_busses();
-  int32_t            dd  = usb_find_devices();
-  DPRINTF("usb: dlo_usb_enumerate\n");
-
-  /* We should do this even if it looks like there are no changes on the bus because
-   * an open() call might call the above functions just to check it's safe to use the
-   * USB device structure pointer. Yuck!
-   *
-   * If this isn't the first enumeration and there are no changes on the bus, don't touch the list
-   *
-   * if (!init && !db && !dd)
-   *   return dlo_ok;
-   */
-  IGNORE(db);
-  IGNORE(dd);
-  
-  /* Look for all DisplayLink devices on the USB busses */
-  for (bus = usb_get_busses(); bus; bus = bus->next) 
-    for (dev = bus->devices; dev; dev = dev->next) 
-      ERR(check_device(dev)); /* Check to see if it's a DisplayLink device. If it is, add to or update the dev_list */
-  
   return dlo_ok;
 }
 
 
-static dlo_retcode_t check_device(struct usb_device *udev)
+static void _convert_utf16le_to_utf8(const uint16_t *utf16, size_t utf16_len, uint8_t *utf8, size_t utf8_len) {
+    // TODO: Check for runover.
+    (void)utf8_len;
+    // Get the UTF-16 length out of the data itself.
+
+    for (size_t i = 0; i < utf16_len; i++) {
+        uint16_t chr = utf16[i];
+        if (chr < 0x80) {
+            *utf8++ = chr & 0xffu;
+        } else if (chr < 0x800) {
+            *utf8++ = (uint8_t)(0xC0 | (chr >> 6 & 0x1F));
+            *utf8++ = (uint8_t)(0x80 | (chr >> 0 & 0x3F));
+        } else {
+            // TODO: Verify surrogate.
+            *utf8++ = (uint8_t)(0xE0 | (chr >> 12 & 0x0F));
+            *utf8++ = (uint8_t)(0x80 | (chr >> 6 & 0x3F));
+            *utf8++ = (uint8_t)(0x80 | (chr >> 0 & 0x3F));
+        }
+        // TODO: Handle UTF-16 code points that take two entries.
+    }
+}
+
+// Count how many bytes a utf-16-le encoded string will take in utf-8.
+static int _count_utf8_bytes(const uint16_t *buf, size_t len) {
+    size_t total_bytes = 0;
+    for (size_t i = 0; i < len; i++) {
+        uint16_t chr = buf[i];
+        if (chr < 0x80) {
+            total_bytes += 1;
+        } else if (chr < 0x800) {
+            total_bytes += 2;
+        } else {
+            total_bytes += 3;
+        }
+        // TODO: Handle UTF-16 code points that take two entries.
+    }
+    return (int) total_bytes;
+}
+
+static uint8_t tuh_descriptor_get_serial_string_sync_utf8(uint8_t daddr, char *buf, size_t buf_len) {
+    uint8_t err = tuh_descriptor_get_serial_string_sync(daddr, 0x409, buf, buf_len);
+    if (err == XFER_RESULT_SUCCESS) {
+        if ((buf[0] & 0xff) != 0) {
+            size_t utf16_len = ((buf[0] & 0xff) - 2) / sizeof(uint16_t);
+            size_t utf8_len = (size_t) _count_utf8_bytes((uint16_t*)(buf + 2), utf16_len);
+            _convert_utf16le_to_utf8((uint16_t *) buf + 2, utf16_len, buf, buf_len);
+            ((uint8_t*) buf)[utf8_len] = '\0';
+        }
+    }
+    return err;
+}
+
+dlo_retcode_t dlo_check_device(uint8_t daddr)
 {
-  static char     string[255];
-  usb_dev_handle *uhand    = usb_open(udev);
+  static char     string[255] = {0};
   dlo_retcode_t   err      = dlo_ok;
   dlo_device_t   *dev      = NULL;
-  bool            not_root = false;
   uint8_t         buf[4];
   dlo_devtype_t   type;
 
-  //DPRINTF("usb: check: check dev &%X\n", (int)dev);
+  uint16_t PID, VID;
+  tuh_vid_pid_get(daddr, &VID, &PID);
 
-  if (!uhand) {
-    // this may not be our device. We just can't open it
-    return dlo_ok;
-  }
-  
-  //DPRINTF("usb: check: uhand &%X vendorID &%X\n", (int)uhand, udev->descriptor.idVendor);
+  DPRINTF("usb: check: daddr &%X vendorID &%X\n", (int)daddr, VID);
 
   /* Reject devices that don't have the DisplayLink VendorID */
-  if (udev->descriptor.idVendor != VENDORID_DISPLAYLINK)
+  if (VID != VENDORID_DISPLAYLINK)
   {
-    UERR(usb_close(uhand));
-    return dlo_ok;
+    UERR(dlo_err_unsupported);
   }
   //DPRINTF("usb: check: get type\n");
 
+  tusb_control_request_t const request = {
+    .bmRequestType_bit = {
+      .recipient = TUSB_REQ_RCPT_DEVICE,
+      .type      = TUSB_REQ_TYPE_VENDOR,
+      .direction = TUSB_DIR_IN
+    },
+    .bRequest = NR_USB_REQUEST_STATUS_DW,
+    .wValue   = 0,
+    .wIndex   = 0,
+    .wLength  = sizeof(buf)
+  };
+
+  tuh_xfer_t xfer = {
+    .daddr       = daddr,
+    .ep_addr     = 0,
+    .setup       = &request,
+    .buffer      = buf,
+    .complete_cb = NULL,
+    .user_data   = 0
+  };
+  
+  TBERR_GOTO(tuh_control_xfer(&xfer));
+
   /* Ask the device for some status information */
-  not_root = true; /* Special case error handling here */
-  UERR_GOTO(usb_control_msg(/* handle */      uhand,
-                            /* requestType */ USB_ENDPOINT_IN | USB_TYPE_VENDOR,
-                            /* request */     NR_USB_REQUEST_STATUS_DW,
-                            /* value */       0,
-                            /* index */       0,
-                            /* bytes */       (char *)buf,
-                            /* size */        sizeof(buf),
-                            /* timeout */     ID_TIMEOUT));
-  not_root = false; /* Back to normal error handling */
   //DPRINTF("usb: check: type buf[3] = &%X\n", buf[3]);
 
   /* Determine what type of device we are connected to */
@@ -230,9 +279,8 @@ static dlo_retcode_t check_device(struct usb_device *udev)
   }
 
   /* Read the device serial number as a string */
-  UERR_GOTO(usb_get_string_simple(uhand, udev->descriptor.iSerialNumber, string, sizeof(string)));
+  TXERR_GOTO(tuh_descriptor_get_serial_string_sync_utf8(daddr, string, sizeof(string)));
   //DPRINTF("usb: check: type &%X serial '%s'\n", (int)type, string);
-
   /* See if this device is already in our device list */
   dev = dlo_device_lookup(string);
   if (dev)
@@ -240,7 +288,7 @@ static dlo_retcode_t check_device(struct usb_device *udev)
     /* Use this opportunity to update the USB device structure pointer, just in
      * case it has moved.
      */
-    dev->cnct->udev = udev;
+    dev->cnct->udev = daddr;
     //DPRINTF("usb: check: already in list\n");
   }
   else
@@ -253,15 +301,10 @@ static dlo_retcode_t check_device(struct usb_device *udev)
     /* It's not. Create and initialise a new list node for the device */
     dev->cnct = (dlo_usb_dev_t *)dlo_malloc(sizeof(dlo_usb_dev_t));
     NERR_GOTO(dev->cnct);
-    dev->cnct->udev = udev;
+    dev->cnct->udev = daddr;
     dev->cnct->uhand = NULL;
   }
   //DPRINTF("usb: check: dlpp node &%X\n", (int)dev);
-
-  /* Close our temporary handle for the device. If this errors, we'll have a duff entry in
-   * the device list but at least the list integrity will be OK.
-   */
-  UERR_GOTO(usb_close(uhand));
 
   return dlo_ok;
 
@@ -274,77 +317,132 @@ error:
     dev->cnct = NULL;
   }
 
-  /* Close our temporary handle for the device */
-  (void) usb_close(uhand);
-
-  /* If the executable wasn't run as root, this is where it normally falls over.
-   * So we'll special case that particular error to help indicate this problem.
-   */
-  if (not_root)
-    return dlo_err_not_root;
-
   return err;
 }
+uint16_t count_interface_total_len(tusb_desc_interface_t const* desc_itf, uint8_t itf_count, uint16_t max_len)
+{
+  uint8_t const* p_desc = (uint8_t const*) desc_itf;
+  uint16_t len = 0;
 
+  while (itf_count--)
+  {
+    // Next on interface desc
+    len += tu_desc_len(desc_itf);
+    p_desc = tu_desc_next(p_desc);
+
+    while (len < max_len)
+    {
+      // return on IAD regardless of itf count
+      if ( tu_desc_type(p_desc) == TUSB_DESC_INTERFACE_ASSOCIATION ) return len;
+
+      if ( (tu_desc_type(p_desc) == TUSB_DESC_INTERFACE) &&
+           ((tusb_desc_interface_t const*) p_desc)->bAlternateSetting == 0 )
+      {
+        break;
+      }
+
+      len += tu_desc_len(p_desc);
+      p_desc = tu_desc_next(p_desc);
+    }
+  }
+
+  return len;
+}
+
+uint8_t open_bulk_endpoint(uint8_t daddr, tusb_desc_interface_t const *desc_itf, uint16_t max_len)
+{
+  // len = interface + hid + n*endpoints
+  uint16_t const drv_len = (uint16_t) (sizeof(tusb_desc_interface_t) + sizeof(tusb_hid_descriptor_hid_t) +
+                                       desc_itf->bNumEndpoints * sizeof(tusb_desc_endpoint_t));
+
+  // corrupted descriptor
+  if (max_len < drv_len) return;
+
+  uint8_t const *p_desc = (uint8_t const *) desc_itf;
+
+  // HID descriptor
+  p_desc = tu_desc_next(p_desc);
+  tusb_hid_descriptor_hid_t const *desc_hid = (tusb_hid_descriptor_hid_t const *) p_desc;
+  //if(HID_DESC_TYPE_HID != desc_hid->bDescriptorType) return;
+
+  // Endpoint descriptor
+  p_desc = tu_desc_next(p_desc);
+  tusb_desc_endpoint_t const * desc_ep = (tusb_desc_endpoint_t const *) p_desc;
+
+  for(int i = 0; i < desc_itf->bNumEndpoints; i++)
+  {
+    if (TUSB_DESC_ENDPOINT != desc_ep->bDescriptorType) return;
+
+    if(tu_edpt_dir(desc_ep->bEndpointAddress) == TUSB_DIR_OUT)
+    {
+      // skip if failed to open endpoint
+      if ( ! tuh_edpt_open(daddr, desc_ep) ) return;
+      printf("Opened to [dev %u: ep %02x]\r\n", daddr, desc_ep->bEndpointAddress);
+      return desc_ep->bEndpointAddress;
+    }
+
+    p_desc = tu_desc_next(p_desc);
+    desc_ep = (tusb_desc_endpoint_t const *) p_desc;
+  }
+}
+
+uint8_t parse_config_descriptor(uint8_t dev_addr, tusb_desc_configuration_t const* desc_cfg)
+{
+  uint8_t const* desc_end = ((uint8_t const*) desc_cfg) + tu_le16toh(desc_cfg->wTotalLength);
+  uint8_t const* p_desc   = tu_desc_next(desc_cfg);
+  uint8_t ret = 0;
+  // parse each interfaces
+  while( p_desc < desc_end )
+  {
+    uint8_t assoc_itf_count = 1;
+
+    // Class will always starts with Interface Association (if any) and then Interface descriptor
+    if ( TUSB_DESC_INTERFACE_ASSOCIATION == tu_desc_type(p_desc) )
+    {
+      tusb_desc_interface_assoc_t const * desc_iad = (tusb_desc_interface_assoc_t const *) p_desc;
+      assoc_itf_count = desc_iad->bInterfaceCount;
+
+      p_desc = tu_desc_next(p_desc); // next to Interface
+    }
+
+    // must be interface from now
+    if( TUSB_DESC_INTERFACE != tu_desc_type(p_desc) ) return;
+    tusb_desc_interface_t const* desc_itf = (tusb_desc_interface_t const*) p_desc;
+
+    uint16_t const drv_len = count_interface_total_len(desc_itf, assoc_itf_count, (uint16_t) (desc_end-p_desc));
+
+    // probably corrupted descriptor
+    if(drv_len < sizeof(tusb_desc_interface_t)) return;
+
+    if (desc_itf->bInterfaceClass == TUSB_CLASS_VENDOR_SPECIFIC)
+    {
+        ret = open_bulk_endpoint(dev_addr, desc_itf, drv_len);
+        break;
+    }
+
+    // next Interface or IAD descriptor
+    p_desc += drv_len;
+  }
+  return ret;
+}
 
 dlo_retcode_t dlo_usb_open(dlo_device_t * const dev)
 {
   dlo_retcode_t   err;
-  usb_dev_handle *uhand;
+  uint32_t *uhand;
   char*		  driver_name;
   int             usb_configuration;
   int             i;
-  int32_t         db = usb_find_busses();
-  int32_t         dd = usb_find_devices();
-
-  /* Do we trust the USB device pointer? Not if the structures may have changed under us... */
-  if (db || dd)
-    return dlo_err_reenum;
-
-  /* Open the device */
-  uhand = usb_open(dev->cnct->udev);
-  DPRINTF("usb: open: uhand &%X\n", (int)uhand);
-
-  if (!uhand)
-    return dlo_err_open;
-
-  /* Store the USB device handle in our dev->cnct word */
-  dev->cnct->uhand = uhand;
-
-  /* Establish the connection with the device */
-  //DPRINTF("usb: open: setting config...\n");
-
-  /*
-   * Because some displaylink devices may report 
-   * a class code (like HID or MSC) that gets
-   * matched by a kernel driver, we must detach
-   * those drivers before libusb can successfully
-   * set configuration or talk to those devices.
-   * For now, we kick everyone off our device, 
-   * but that includes cases we're intentionally
-   * a composite device with HID interfaces that
-   * control something (e.g. a button on a dock).
-   * And the code below is blindly unloading
-   * the kernel HID drivers for those.  May want
-   * to get more sophisticated in the future.
-   */
-  driver_name = dlo_malloc(128);
-  for (i=0; i < dev->cnct->udev->config->bNumInterfaces; i++) 
+  
+  uint8_t daddr = dev->cnct->udev;
+  uint16_t temp_buf[128];
+  
+  /* Use this opportunity to open endpoint 1 for bulk write */
+  if (XFER_RESULT_SUCCESS == tuh_descriptor_get_configuration_sync(daddr, 0, temp_buf, sizeof(temp_buf)))
   {
-    memset(driver_name, 0, 128);
-    if (usb_get_driver_np(uhand, i, driver_name, 128) == 0)
-    {
-      DPRINTF("usb: driver (%s) already attached to device\n", driver_name);
-
-      // Reports are that this call can return error even if successful
-      usb_detach_kernel_driver_np(uhand,i);
-    }
+    /* Use dev->cnct->uhand for the endpoint address */
+    dev->cnct->uhand = parse_config_descriptor(daddr, (tusb_desc_configuration_t*) temp_buf);
   }
-   
-  UERR(usb_set_configuration(uhand, 1));
-
-  //DPRINTF("usb: open: claiming iface...\n");
-  UERR(usb_claim_interface(uhand, 0));
 
   /* Mark the device as claimed */
   dev->claimed = true;
@@ -391,8 +489,7 @@ dlo_retcode_t dlo_usb_close(dlo_device_t * const dev)
       dev->bufend = NULL;
     }
     dev->claimed = false;
-    UERR(usb_release_interface(dev->cnct->uhand, 0));
-    UERR(usb_close(dev->cnct->uhand));
+    usbh_edpt_release(dev->cnct->udev, dev->cnct->uhand);
   }
   return dlo_ok;
 }
@@ -400,15 +497,30 @@ dlo_retcode_t dlo_usb_close(dlo_device_t * const dev)
 
 dlo_retcode_t dlo_usb_chan_sel(const dlo_device_t * const dev, const char * const buf, const size_t size)
 {
-  if (size)
-    UERR(usb_control_msg(/* handle */      dev->cnct->uhand,
-                         /* requestType */ USB_TYPE_VENDOR,
-                         /* request */     NR_USB_REQUEST_CHANNEL,
-                         /* value */       0,
-                         /* index */       0,
-                         /* bytes */       (char *)buf,
-                         /* size */        size,
-                         /* timeout */     CHANSEL_TIMEOUT));
+  if (size) {
+        tusb_control_request_t const request = {
+            .bmRequestType_bit = {
+            .recipient = TUSB_REQ_RCPT_DEVICE,
+            .type      = TUSB_REQ_TYPE_VENDOR,
+            .direction = TUSB_DIR_OUT
+            },
+            .bRequest = NR_USB_REQUEST_CHANNEL,
+            .wValue   = 0,
+            .wIndex   = 0,
+            .wLength  = size
+        };
+
+        tuh_xfer_t xfer = {
+            .daddr       = dev->cnct->udev,
+            .ep_addr     = 0,
+            .setup       = &request,
+            .buffer      = buf,
+            .complete_cb = NULL,
+            .user_data   = 0
+        };
+    
+        tuh_control_xfer(&xfer);
+    }
   return dlo_ok;
 }
 
@@ -433,6 +545,8 @@ dlo_retcode_t dlo_usb_write(dlo_device_t * const dev)
   return err;
 }
 
+
+void dlo_xfer_cb(tuh_xfer_t* xfer) {}
 
 dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t size)
 {
@@ -482,11 +596,24 @@ dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t siz
     }
 #endif
 
-    UERR(usb_bulk_write(/* handle */   dev->cnct->uhand,
-                        /* endpoint */ 1,
-                        /* bytes */    buf,
-                        /* size */     num,
-                        /* timeout */  dev->timeout));
+    tuh_xfer_t xfer =
+    {
+      .daddr       = dev->cnct->udev,
+      .ep_addr     = dev->cnct->uhand,
+      .buflen      = num,
+      .buffer      = buf,
+      .complete_cb = dlo_xfer_cb,
+      .user_data   = 0
+    };
+
+    // submit transfer for this EP
+    tuh_edpt_xfer(&xfer);
+
+    // actually synchronous please
+    while (usbh_edpt_busy(dev->cnct->udev, dev->cnct->uhand)) {
+      tuh_task();
+    }
+
     buf  += num;
     size -= num;
   }
@@ -497,29 +624,7 @@ dlo_retcode_t dlo_usb_write_buf(dlo_device_t * const dev, char * buf, size_t siz
 /* File-scope function definitions -----------------------------------------------------*/
 
 
-static dlo_retcode_t usb_error_grab(void)
-{
-  char *str = usb_strerror();
-
-  /* If we have a previous USB error message stored, free it */
-  if (usb_err_str)
-    dlo_free(usb_err_str);
-
-  if (str)
-  {
-    /* Allocate memory for the new error message and store that */
-    usb_err_str = dlo_malloc(1 + strlen(str));
-    if (usb_err_str)
-      strcpy(usb_err_str, str);
-  }
-
-  /* Always return the generic USB error code */
-  return dlo_err_usb;
-}
-
-
-
-static dlo_retcode_t read_edid(dlo_device_t * const dev, usb_dev_handle *uhand)
+static dlo_retcode_t read_edid(dlo_device_t * const dev, uint32_t *uhand)
 {
   dlo_retcode_t err;
   uint32_t      i;
@@ -533,14 +638,29 @@ static dlo_retcode_t read_edid(dlo_device_t * const dev, usb_dev_handle *uhand)
   /* Attempt to read the EDID structure from the device */
   for (i = 0; i < EDID_STRUCT_SZ; i++)
   {
-    UERR_GOTO(usb_control_msg(/* handle */      uhand,
-                              /* requestType */ USB_ENDPOINT_IN | USB_TYPE_VENDOR,
-                              /* request */     NR_USB_REQUEST_I2C_SUB_IO,
-                              /* value */       i << 8,
-                              /* index */       0xA1,
-                              /* bytes */       (char *)buf,
-                              /* size */        sizeof(buf),
-                              /* timeout */     dev->timeout));
+    tusb_control_request_t const request = {
+      .bmRequestType_bit = {
+      .recipient = TUSB_REQ_RCPT_DEVICE,
+      .type      = TUSB_REQ_TYPE_VENDOR,
+      .direction = TUSB_DIR_IN
+      },
+      .bRequest = NR_USB_REQUEST_I2C_SUB_IO,
+      .wValue   = i << 8,
+      .wIndex   = 0xA1,
+      .wLength  = sizeof(buf)
+    };
+
+    tuh_xfer_t xfer = {
+      .daddr       = dev->cnct->udev,
+      .ep_addr     = 0,
+      .setup       = &request,
+      .buffer      = buf,
+      .complete_cb = NULL,
+      .user_data   = 0
+    };
+
+    tuh_control_xfer(&xfer);
+
     if (buf[0])
       ERR_GOTO(dlo_err_iic_op);
     //DPRINTF("usb: edid[%u]=&%02X\n", i, buf[1]);
